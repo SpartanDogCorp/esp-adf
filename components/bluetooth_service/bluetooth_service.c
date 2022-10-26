@@ -49,7 +49,7 @@
 #include "bluetooth_service.h"
 #include "bt_keycontrol.h"
 
-static const char *TAG = "BLUETOOTH_SERVICE";
+static const char* TAG = "BLUETOOTH_SERVICE";
 
 #define BT_SOURCE_DEFAULT_REMOTE_NAME "ESP-ADF-SPEAKER"
 
@@ -87,104 +87,108 @@ typedef struct bluetooth_service {
     int a2dp_sample_rate;
 } bluetooth_service_t;
 
-bluetooth_service_t *g_bt_service = NULL;
+bluetooth_service_t* g_bt_service = NULL;
 
-static const char *conn_state_str[] = { "Disconnected", "Connecting", "Connected", "Disconnecting" };
-static const char *audio_state_str[] = { "Suspended", "Stopped", "Started" };
+static const char* conn_state_str[] = { "Disconnected", "Connecting", "Connected", "Disconnecting" };
+static const char* audio_state_str[] = { "Suspended", "Stopped", "Started" };
 
-static void bt_a2d_sink_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *p_param)
+static void bt_a2d_sink_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t* p_param)
 {
-    esp_a2d_cb_param_t *a2d = NULL;
+    esp_a2d_cb_param_t* a2d = NULL;
     switch (event) {
-        case ESP_A2D_CONNECTION_STATE_EVT:
-            a2d = (esp_a2d_cb_param_t *)(p_param);
-            uint8_t *bda = a2d->conn_stat.remote_bda;
-            ESP_LOGD(TAG, "A2DP connection state: %s, [%02x:%02x:%02x:%02x:%02x:%02x]",
-                     conn_state_str[a2d->conn_stat.state], bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+    case ESP_A2D_CONNECTION_STATE_EVT:
+        a2d = (esp_a2d_cb_param_t*)(p_param);
+        uint8_t* bda = a2d->conn_stat.remote_bda;
+        ESP_LOGD(TAG, "A2DP connection state: %s, [%02x:%02x:%02x:%02x:%02x:%02x]",
+            conn_state_str[a2d->conn_stat.state], bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
 
-            if (g_bt_service->connection_state == ESP_A2D_CONNECTION_STATE_DISCONNECTED
-                && a2d->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
-                memcpy(&g_bt_service->remote_bda, &a2d->conn_stat.remote_bda, sizeof(esp_bd_addr_t));
-                g_bt_service->connection_state = a2d->conn_stat.state;
-                ESP_LOGD(TAG, "A2DP connection state = CONNECTED");
-                if (g_bt_service->periph) {
-                    esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_CONNECTED, NULL, 0);
-                }
+        if (g_bt_service->connection_state == ESP_A2D_CONNECTION_STATE_DISCONNECTED
+            && a2d->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+            memcpy(&g_bt_service->remote_bda, &a2d->conn_stat.remote_bda, sizeof(esp_bd_addr_t));
+            g_bt_service->connection_state = a2d->conn_stat.state;
+            ESP_LOGD(TAG, "A2DP connection state = CONNECTED");
+            if (g_bt_service->periph) {
+                esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_CONNECTED, NULL, 0);
             }
-            if (memcmp(&g_bt_service->remote_bda, &a2d->conn_stat.remote_bda, sizeof(esp_bd_addr_t)) == 0
-                && g_bt_service->connection_state == ESP_A2D_CONNECTION_STATE_CONNECTED
-                && a2d->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
-                memset(&g_bt_service->remote_bda, 0, sizeof(esp_bd_addr_t));
-                g_bt_service->connection_state = ESP_A2D_CONNECTION_STATE_DISCONNECTED;
-                ESP_LOGD(TAG, "A2DP connection state =  DISCONNECTED");
-                if (g_bt_service->stream) {
-                    audio_element_report_status(g_bt_service->stream, AEL_STATUS_INPUT_DONE);
-                }
-                if (g_bt_service->periph) {
-                    esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_DISCONNECTED, NULL, 0);
-                }
+        }
+        if (memcmp(&g_bt_service->remote_bda, &a2d->conn_stat.remote_bda, sizeof(esp_bd_addr_t)) == 0
+            && g_bt_service->connection_state == ESP_A2D_CONNECTION_STATE_CONNECTED
+            && a2d->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
+            memset(&g_bt_service->remote_bda, 0, sizeof(esp_bd_addr_t));
+            g_bt_service->connection_state = ESP_A2D_CONNECTION_STATE_DISCONNECTED;
+            ESP_LOGD(TAG, "A2DP connection state =  DISCONNECTED");
+            if (g_bt_service->stream) {
+                audio_element_report_status(g_bt_service->stream, AEL_STATUS_INPUT_DONE);
             }
+            if (g_bt_service->periph) {
+                esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_DISCONNECTED, NULL, 0);
+            }
+        }
 
+        break;
+    case ESP_A2D_AUDIO_STATE_EVT:
+        a2d = (esp_a2d_cb_param_t*)(p_param);
+        ESP_LOGD(TAG, "A2DP audio state: %s", audio_state_str[a2d->audio_stat.state]);
+        g_bt_service->audio_state = a2d->audio_stat.state;
+        if (ESP_A2D_AUDIO_STATE_STARTED == a2d->audio_stat.state) {
+            g_bt_service->pos = 0;
+        }
+        if (g_bt_service->periph == NULL) {
             break;
-        case ESP_A2D_AUDIO_STATE_EVT:
-            a2d = (esp_a2d_cb_param_t *)(p_param);
-            ESP_LOGD(TAG, "A2DP audio state: %s", audio_state_str[a2d->audio_stat.state]);
-            g_bt_service->audio_state = a2d->audio_stat.state;
-            if (ESP_A2D_AUDIO_STATE_STARTED == a2d->audio_stat.state) {
-                g_bt_service->pos = 0;
+        }
+
+        if (ESP_A2D_AUDIO_STATE_STARTED == a2d->audio_stat.state) {
+            esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_AUDIO_STARTED, NULL, 0);
+        }
+        else if (ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND == a2d->audio_stat.state) {
+            esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_AUDIO_SUSPENDED, NULL, 0);
+        }
+        else if (ESP_A2D_AUDIO_STATE_STOPPED == a2d->audio_stat.state) {
+            esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_AUDIO_STOPPED, NULL, 0);
+        }
+
+        break;
+    case ESP_A2D_AUDIO_CFG_EVT:
+        a2d = (esp_a2d_cb_param_t*)(p_param);
+        ESP_LOGD(TAG, "A2DP audio stream configuration, codec type %d", a2d->audio_cfg.mcc.type);
+        if (a2d->audio_cfg.mcc.type == ESP_A2D_MCT_SBC) {
+            int sample_rate = 16000;
+            char oct0 = a2d->audio_cfg.mcc.cie.sbc[0];
+            if (oct0 & (0x01 << 6)) {
+                sample_rate = 32000;
             }
-            if (g_bt_service->periph == NULL) {
+            else if (oct0 & (0x01 << 5)) {
+                sample_rate = 44100;
+            }
+            else if (oct0 & (0x01 << 4)) {
+                sample_rate = 48000;
+            }
+            g_bt_service->a2dp_sample_rate = sample_rate;
+            ESP_LOGD(TAG, "Bluetooth configured, sample rate=%d", sample_rate);
+            if (g_bt_service->stream == NULL) {
                 break;
             }
 
-            if (ESP_A2D_AUDIO_STATE_STARTED == a2d->audio_stat.state) {
-                esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_AUDIO_STARTED, NULL, 0);
-            } else if (ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND == a2d->audio_stat.state) {
-                esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_AUDIO_SUSPENDED, NULL, 0);
-            } else if (ESP_A2D_AUDIO_STATE_STOPPED == a2d->audio_stat.state) {
-                esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_AUDIO_STOPPED, NULL, 0);
-            }
-
-            break;
-        case ESP_A2D_AUDIO_CFG_EVT:
-            a2d = (esp_a2d_cb_param_t *)(p_param);
-            ESP_LOGD(TAG, "A2DP audio stream configuration, codec type %d", a2d->audio_cfg.mcc.type);
-            if (a2d->audio_cfg.mcc.type == ESP_A2D_MCT_SBC) {
-                int sample_rate = 16000;
-                char oct0 = a2d->audio_cfg.mcc.cie.sbc[0];
-                if (oct0 & (0x01 << 6)) {
-                    sample_rate = 32000;
-                } else if (oct0 & (0x01 << 5)) {
-                    sample_rate = 44100;
-                } else if (oct0 & (0x01 << 4)) {
-                    sample_rate = 48000;
-                }
-                g_bt_service->a2dp_sample_rate = sample_rate;
-                ESP_LOGD(TAG, "Bluetooth configured, sample rate=%d", sample_rate);
-                if (g_bt_service->stream == NULL) {
-                    break;
-                }
-
-                audio_element_set_music_info(g_bt_service->stream, sample_rate, 2, 16);
-                audio_element_report_info(g_bt_service->stream);
-            }
-            break;
-        default:
-            ESP_LOGD(TAG, "Unhandled A2DP event: %d", event);
-            break;
+            audio_element_set_music_info(g_bt_service->stream, sample_rate, 2, 16);
+            audio_element_report_info(g_bt_service->stream);
+        }
+        break;
+    default:
+        ESP_LOGD(TAG, "Unhandled A2DP event: %d", event);
+        break;
     }
 }
 
-static void bt_a2d_sink_data_cb(const uint8_t *data, uint32_t len)
+static void bt_a2d_sink_data_cb(const uint8_t* data, uint32_t len)
 {
     if (g_bt_service->stream) {
         if (audio_element_get_state(g_bt_service->stream) == AEL_STATE_RUNNING) {
-            audio_element_output(g_bt_service->stream, (char *)data, len);
+            audio_element_output(g_bt_service->stream, (char*)data, len);
         }
     }
 }
 
-static int32_t bt_a2d_source_data_cb(uint8_t *data, int32_t len)
+static int32_t bt_a2d_source_data_cb(uint8_t* data, int32_t len)
 {
     if (g_bt_service->stream) {
         if (audio_element_get_state(g_bt_service->stream) == AEL_STATE_RUNNING) {
@@ -192,7 +196,7 @@ static int32_t bt_a2d_source_data_cb(uint8_t *data, int32_t len)
                 return 0;
             }
 
-            len = audio_element_input(g_bt_service->stream, (char *)data, len);
+            len = audio_element_input(g_bt_service->stream, (char*)data, len);
             if (len == AEL_IO_DONE) {
                 if (g_bt_service->periph) {
                     esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_AUDIO_SUSPENDED, NULL, 0);
@@ -204,21 +208,21 @@ static int32_t bt_a2d_source_data_cb(uint8_t *data, int32_t len)
     return 0;
 }
 
-static char *bda2str(esp_bd_addr_t bda, char *str, size_t size)
+static char* bda2str(esp_bd_addr_t bda, char* str, size_t size)
 {
     if (bda == NULL || str == NULL || size < 18) {
         return NULL;
     }
 
-    uint8_t *p = bda;
+    uint8_t* p = bda;
     sprintf(str, "%02x:%02x:%02x:%02x:%02x:%02x",
-            p[0], p[1], p[2], p[3], p[4], p[5]);
+        p[0], p[1], p[2], p[3], p[4], p[5]);
     return str;
 }
 
-static bool get_name_from_eir(uint8_t *eir, uint8_t *bdname, uint8_t *bdname_len)
+static bool get_name_from_eir(uint8_t* eir, uint8_t* bdname, uint8_t* bdname_len)
 {
-    uint8_t *rmt_bdname = NULL;
+    uint8_t* rmt_bdname = NULL;
     uint8_t rmt_bdname_len = 0;
 
     if (!eir) {
@@ -248,35 +252,35 @@ static bool get_name_from_eir(uint8_t *eir, uint8_t *bdname, uint8_t *bdname_len
     return false;
 }
 
-static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)
+static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t* param)
 {
     char bda_str[18];
     uint32_t cod = 0;
     int32_t rssi = -129; /* invalid value */
-    uint8_t *eir = NULL;
+    uint8_t* eir = NULL;
     esp_peer_bdname_t peer_bdname;
-    esp_bt_gap_dev_prop_t *p;
+    esp_bt_gap_dev_prop_t* p;
 
     ESP_LOGI(TAG, "Scanned device: %s", bda2str(param->disc_res.bda, bda_str, 18));
     for (int i = 0; i < param->disc_res.num_prop; i++) {
         p = param->disc_res.prop + i;
         switch (p->type) {
-            case ESP_BT_GAP_DEV_PROP_COD:
-                cod = *(uint32_t *)(p->val);
-                ESP_LOGI(TAG, "--Class of Device: 0x%x", cod);
-                break;
-            case ESP_BT_GAP_DEV_PROP_RSSI:
-                rssi = *(int8_t *)(p->val);
-                ESP_LOGI(TAG, "--RSSI: %d", rssi);
-                break;
-            case ESP_BT_GAP_DEV_PROP_EIR:
-                eir = (uint8_t *)(p->val);
-                get_name_from_eir(eir, (uint8_t *)&peer_bdname, NULL);
-                ESP_LOGI(TAG, "--Name: %s", peer_bdname);
-                break;
-            case ESP_BT_GAP_DEV_PROP_BDNAME:
-            default:
-                break;
+        case ESP_BT_GAP_DEV_PROP_COD:
+            cod = *(uint32_t*)(p->val);
+            ESP_LOGI(TAG, "--Class of Device: 0x%x", cod);
+            break;
+        case ESP_BT_GAP_DEV_PROP_RSSI:
+            rssi = *(int8_t*)(p->val);
+            ESP_LOGI(TAG, "--RSSI: %d", rssi);
+            break;
+        case ESP_BT_GAP_DEV_PROP_EIR:
+            eir = (uint8_t*)(p->val);
+            get_name_from_eir(eir, (uint8_t*)&peer_bdname, NULL);
+            ESP_LOGI(TAG, "--Name: %s", peer_bdname);
+            break;
+        case ESP_BT_GAP_DEV_PROP_BDNAME:
+        default:
+            break;
         }
     }
 
@@ -287,12 +291,12 @@ static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)
 
     /* search for device named "peer_bdname" in its extended inquiry response */
     if (eir) {
-        get_name_from_eir(eir, (uint8_t *)&peer_bdname, NULL);
-        if (strcmp((char *)peer_bdname, (char *)&g_bt_service->peer_bdname) != 0) {
+        get_name_from_eir(eir, (uint8_t*)&peer_bdname, NULL);
+        if (strcmp((char*)peer_bdname, (char*)&g_bt_service->peer_bdname) != 0) {
             return;
         }
 
-        ESP_LOGI(TAG, "Found a target device, address %s, name %s", bda_str, (uint8_t *)peer_bdname);
+        ESP_LOGI(TAG, "Found a target device, address %s, name %s", bda_str, (uint8_t*)peer_bdname);
         g_bt_service->source_a2d_state = BT_SOURCE_STATE_DISCOVERED;
         memcpy(&g_bt_service->remote_bda, param->disc_res.bda, ESP_BD_ADDR_LEN);
         ESP_LOGI(TAG, "Cancel device discovery ...");
@@ -300,181 +304,190 @@ static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)
     }
 }
 
-static void bt_avrc_ct_cb(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *p_param)
+static void bt_avrc_ct_cb(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t* p_param)
 {
-    esp_avrc_ct_cb_param_t *rc = p_param;
+    esp_avrc_ct_cb_param_t* rc = p_param;
     switch (event) {
-        case ESP_AVRC_CT_CONNECTION_STATE_EVT: {
-                uint8_t *bda = rc->conn_stat.remote_bda;
-                g_bt_service->avrc_connected = rc->conn_stat.connected;
-                if (rc->conn_stat.connected) {
-                    ESP_LOGD(TAG, "ESP_AVRC_CT_CONNECTION_STATE_EVT");
-                    bt_key_act_sm_init();
-                } else if (0 == rc->conn_stat.connected) {
-                    bt_key_act_sm_deinit();
-                }
+    case ESP_AVRC_CT_CONNECTION_STATE_EVT: {
+        uint8_t* bda = rc->conn_stat.remote_bda;
+        g_bt_service->avrc_connected = rc->conn_stat.connected;
+        if (rc->conn_stat.connected) {
+            ESP_LOGD(TAG, "ESP_AVRC_CT_CONNECTION_STATE_EVT");
+            bt_key_act_sm_init();
+        }
+        else if (0 == rc->conn_stat.connected) {
+            bt_key_act_sm_deinit();
+        }
 
-                ESP_LOGD(TAG, "AVRC conn_state evt: state %d, [%02x:%02x:%02x:%02x:%02x:%02x]",
-                         rc->conn_stat.connected, bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
-                break;
-            }
-        case ESP_AVRC_CT_PASSTHROUGH_RSP_EVT: {
-                if (g_bt_service->avrc_connected) {
-                    ESP_LOGD(TAG, "AVRC passthrough rsp: key_code 0x%x, key_state %d", rc->psth_rsp.key_code, rc->psth_rsp.key_state);
-                    bt_key_act_param_t param;
-                    memset(&param, 0, sizeof(bt_key_act_param_t));
-                    param.evt = event;
-                    param.tl = rc->psth_rsp.tl;
-                    param.key_code = rc->psth_rsp.key_code;
-                    param.key_state = rc->psth_rsp.key_state;
-                    bt_key_act_state_machine(&param);
-                }
-                break;
-            }
-        case ESP_AVRC_CT_METADATA_RSP_EVT: {
-                ESP_LOGD(TAG, "AVRC metadata rsp: attribute id 0x%x, %s", rc->meta_rsp.attr_id, rc->meta_rsp.attr_text);
-                // free(rc->meta_rsp.attr_text);
-                break;
-            }
-        case ESP_AVRC_CT_CHANGE_NOTIFY_EVT: {
-                ESP_LOGD(TAG, "AVRC event notification: %d", rc->change_ntf.event_id);
-                break;
-            }
-        case ESP_AVRC_CT_REMOTE_FEATURES_EVT: {
-                ESP_LOGD(TAG, "AVRC remote features %x", rc->rmt_feats.feat_mask);
-                break;
-            }
+        ESP_LOGD(TAG, "AVRC conn_state evt: state %d, [%02x:%02x:%02x:%02x:%02x:%02x]",
+            rc->conn_stat.connected, bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+        break;
+    }
+    case ESP_AVRC_CT_PASSTHROUGH_RSP_EVT: {
+        if (g_bt_service->avrc_connected) {
+            ESP_LOGD(TAG, "AVRC passthrough rsp: key_code 0x%x, key_state %d", rc->psth_rsp.key_code, rc->psth_rsp.key_state);
+            bt_key_act_param_t param;
+            memset(&param, 0, sizeof(bt_key_act_param_t));
+            param.evt = event;
+            param.tl = rc->psth_rsp.tl;
+            param.key_code = rc->psth_rsp.key_code;
+            param.key_state = rc->psth_rsp.key_state;
+            bt_key_act_state_machine(&param);
+        }
+        break;
+    }
+    case ESP_AVRC_CT_METADATA_RSP_EVT: {
+        ESP_LOGD(TAG, "AVRC metadata rsp: attribute id 0x%x, %s", rc->meta_rsp.attr_id, rc->meta_rsp.attr_text);
+        // free(rc->meta_rsp.attr_text);
+        break;
+    }
+    case ESP_AVRC_CT_CHANGE_NOTIFY_EVT: {
+        ESP_LOGD(TAG, "AVRC event notification: %d", rc->change_ntf.event_id);
+        break;
+    }
+    case ESP_AVRC_CT_REMOTE_FEATURES_EVT: {
+        ESP_LOGD(TAG, "AVRC remote features %x", rc->rmt_feats.feat_mask);
+        break;
+    }
 
 #if (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 0, 0))
-        case ESP_AVRC_CT_GET_RN_CAPABILITIES_RSP_EVT: {
-                ESP_LOGD(TAG, "remote rn_cap: count %d, bitmask 0x%x", rc->get_rn_caps_rsp.cap_count,
-                         rc->get_rn_caps_rsp.evt_set.bits);
-                break;
-            }
+    case ESP_AVRC_CT_GET_RN_CAPABILITIES_RSP_EVT: {
+        ESP_LOGD(TAG, "remote rn_cap: count %d, bitmask 0x%x", rc->get_rn_caps_rsp.cap_count,
+            rc->get_rn_caps_rsp.evt_set.bits);
+        break;
+    }
 #endif
 
-        default:
-            ESP_LOGE(TAG, "%s unhandled evt %d", __func__, event);
-            break;
+    default:
+        ESP_LOGE(TAG, "%s unhandled evt %d", __func__, event);
+        break;
     }
 }
 
-static void bt_app_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
+static void bt_app_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param)
 {
     switch (event) {
-        case ESP_BT_GAP_DISC_RES_EVT: {
-                filter_inquiry_scan_result(param);
-                break;
+    case ESP_BT_GAP_DISC_RES_EVT: {
+        filter_inquiry_scan_result(param);
+        break;
+    }
+    case ESP_BT_GAP_DISC_STATE_CHANGED_EVT: {
+        if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED) {
+            if (g_bt_service->source_a2d_state == BT_SOURCE_STATE_DISCOVERED) {
+                g_bt_service->source_a2d_state = BT_SOURCE_STATE_CONNECTING;
+                ESP_LOGI(TAG, "Device discovery stopped.");
+                ESP_LOGI(TAG, "a2dp connecting to peer: %s", g_bt_service->peer_bdname);
+                esp_a2d_source_connect(g_bt_service->remote_bda);
             }
-        case ESP_BT_GAP_DISC_STATE_CHANGED_EVT: {
-                if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED) {
-                    if (g_bt_service->source_a2d_state == BT_SOURCE_STATE_DISCOVERED) {
-                        g_bt_service->source_a2d_state = BT_SOURCE_STATE_CONNECTING;
-                        ESP_LOGI(TAG, "Device discovery stopped.");
-                        ESP_LOGI(TAG, "a2dp connecting to peer: %s", g_bt_service->peer_bdname);
-                        esp_a2d_source_connect(g_bt_service->remote_bda);
-                    } else if (g_bt_service->source_a2d_state != BT_SOURCE_STATE_IDLE) {
-                        // not discovered, continue to discover
-                        ESP_LOGI(TAG, "Device discovery failed, continue to discover...");
-                        esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
-                    }
-                } else if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STARTED) {
-                    ESP_LOGI(TAG, "Discovery started.");
-                }
-                break;
+            else if (g_bt_service->source_a2d_state != BT_SOURCE_STATE_IDLE) {
+                // not discovered, continue to discover
+                ESP_LOGI(TAG, "Device discovery failed, continue to discover...");
+                esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 10, 0);
             }
-        case ESP_BT_GAP_RMT_SRVCS_EVT:
-        case ESP_BT_GAP_RMT_SRVC_REC_EVT:
-            break;
-        case ESP_BT_GAP_AUTH_CMPL_EVT: {
-                if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
-                    ESP_LOGI(TAG, "authentication success: %s", param->auth_cmpl.device_name);
-                    esp_log_buffer_hex(TAG, param->auth_cmpl.bda, ESP_BD_ADDR_LEN);
-                } else {
-                    ESP_LOGI(TAG, "authentication failed, status:%d", param->auth_cmpl.stat);
-                }
-                break;
-            }
-        case ESP_BT_GAP_PIN_REQ_EVT: {
-                ESP_LOGI(TAG, "ESP_BT_GAP_PIN_REQ_EVT min_16_digit:%d", param->pin_req.min_16_digit);
-                if (param->pin_req.min_16_digit) {
-                    ESP_LOGI(TAG, "Input pin code: 0000 0000 0000 0000");
-                    esp_bt_pin_code_t pin_code = { 0 };
-                    esp_bt_gap_pin_reply(param->pin_req.bda, true, 16, pin_code);
-                } else {
-                    ESP_LOGI(TAG, "Input pin code: 1234");
-                    esp_bt_pin_code_t pin_code;
-                    pin_code[0] = '1';
-                    pin_code[1] = '2';
-                    pin_code[2] = '3';
-                    pin_code[3] = '4';
-                    esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin_code);
-                }
-                break;
-            }
-        default: {
-                ESP_LOGI(TAG, "event: %d", event);
-                break;
-            }
+        }
+        else if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STARTED) {
+            ESP_LOGI(TAG, "Discovery started.");
+        }
+        break;
+    }
+    case ESP_BT_GAP_RMT_SRVCS_EVT:
+    case ESP_BT_GAP_RMT_SRVC_REC_EVT:
+        break;
+    case ESP_BT_GAP_AUTH_CMPL_EVT: {
+        if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
+            ESP_LOGI(TAG, "authentication success: %s", param->auth_cmpl.device_name);
+            esp_log_buffer_hex(TAG, param->auth_cmpl.bda, ESP_BD_ADDR_LEN);
+        }
+        else {
+            ESP_LOGI(TAG, "authentication failed, status:%d", param->auth_cmpl.stat);
+        }
+        break;
+    }
+    case ESP_BT_GAP_PIN_REQ_EVT: {
+        ESP_LOGI(TAG, "ESP_BT_GAP_PIN_REQ_EVT min_16_digit:%d", param->pin_req.min_16_digit);
+        if (param->pin_req.min_16_digit) {
+            ESP_LOGI(TAG, "Input pin code: 0000 0000 0000 0000");
+            esp_bt_pin_code_t pin_code = { 0 };
+            esp_bt_gap_pin_reply(param->pin_req.bda, true, 16, pin_code);
+        }
+        else {
+            ESP_LOGI(TAG, "Input pin code: 1234");
+            esp_bt_pin_code_t pin_code;
+            pin_code[0] = '1';
+            pin_code[1] = '2';
+            pin_code[2] = '3';
+            pin_code[3] = '4';
+            esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin_code);
+        }
+        break;
+    }
+    default: {
+        ESP_LOGI(TAG, "event: %d", event);
+        break;
+    }
     }
     return;
 }
-static void bt_a2d_source_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
+static void bt_a2d_source_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t* param)
 {
     ESP_LOGI(TAG, "%s state %d, evt 0x%x", __func__, g_bt_service->source_a2d_state, event);
     switch (g_bt_service->source_a2d_state) {
-        case BT_SOURCE_STATE_DISCOVERING:
-        case BT_SOURCE_STATE_DISCOVERED:
-            break;
-        case BT_SOURCE_STATE_UNCONNECTED:
-            break;
-        case BT_SOURCE_STATE_CONNECTING:
-            if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
-                ESP_LOGI(TAG, "a2dp connected");
-                g_bt_service->source_a2d_state = BT_SOURCE_STATE_CONNECTED;
+    case BT_SOURCE_STATE_DISCOVERING:
+    case BT_SOURCE_STATE_DISCOVERED:
+        break;
+    case BT_SOURCE_STATE_UNCONNECTED:
+        break;
+    case BT_SOURCE_STATE_CONNECTING:
+        if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+            ESP_LOGI(TAG, "a2dp connected");
+            g_bt_service->source_a2d_state = BT_SOURCE_STATE_CONNECTED;
 #if (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 0, 0))
-                esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+            esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
 #else
-                esp_bt_gap_set_scan_mode(ESP_BT_SCAN_MODE_NONE);
+            esp_bt_gap_set_scan_mode(ESP_BT_SCAN_MODE_NONE);
 #endif
-                if (g_bt_service->periph) {
-                    esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_CONNECTED, NULL, 0);
-                }
-                ESP_LOGI(TAG, "a2dp media ready checking ...");
-                esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY);
-            } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
-                g_bt_service->source_a2d_state = BT_SOURCE_STATE_UNCONNECTED;
+            if (g_bt_service->periph) {
+                esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_CONNECTED, NULL, 0);
             }
-            break;
-        case BT_SOURCE_STATE_CONNECTED:
-            if (event == ESP_A2D_MEDIA_CTRL_ACK_EVT) {
-                if (param->media_ctrl_stat.cmd == ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY && param->media_ctrl_stat.status == ESP_A2D_MEDIA_CTRL_ACK_SUCCESS) {
-                    ESP_LOGI(TAG, "a2dp media ready, starting ...");
-                    esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_START);
-                } else if (param->media_ctrl_stat.cmd == ESP_A2D_MEDIA_CTRL_START && param->media_ctrl_stat.status == ESP_A2D_MEDIA_CTRL_ACK_SUCCESS) {
-                    ESP_LOGI(TAG, "a2dp media start successfully.");
-                    g_bt_service->audio_state = ESP_A2D_AUDIO_STATE_STARTED;
-                } else if (param->media_ctrl_stat.cmd != ESP_A2D_MEDIA_CTRL_SUSPEND) {
-                    // not started successfully, transfer to idle state
-                    ESP_LOGI(TAG, "a2dp media start failed.");
-                    g_bt_service->audio_state = BT_SOURCE_STATE_IDLE;
-                }
-            } else if (event == ESP_A2D_CONNECTION_STATE_EVT && param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
-                g_bt_service->source_a2d_state = BT_SOURCE_STATE_UNCONNECTED;
-                if (g_bt_service->periph) {
-                    esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_DISCONNECTED, NULL, 0);
-                }
+            ESP_LOGI(TAG, "a2dp media ready checking ...");
+            esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY);
+        }
+        else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
+            g_bt_service->source_a2d_state = BT_SOURCE_STATE_UNCONNECTED;
+        }
+        break;
+    case BT_SOURCE_STATE_CONNECTED:
+        if (event == ESP_A2D_MEDIA_CTRL_ACK_EVT) {
+            if (param->media_ctrl_stat.cmd == ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY && param->media_ctrl_stat.status == ESP_A2D_MEDIA_CTRL_ACK_SUCCESS) {
+                ESP_LOGI(TAG, "a2dp media ready, starting ...");
+                esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_START);
             }
-            break;
-        case BT_SOURCE_STATE_DISCONNECTING:
-            break;
-        default:
-            ESP_LOGE(TAG, "%s invalid state %d", __func__, g_bt_service->source_a2d_state);
-            break;
+            else if (param->media_ctrl_stat.cmd == ESP_A2D_MEDIA_CTRL_START && param->media_ctrl_stat.status == ESP_A2D_MEDIA_CTRL_ACK_SUCCESS) {
+                ESP_LOGI(TAG, "a2dp media start successfully.");
+                g_bt_service->audio_state = ESP_A2D_AUDIO_STATE_STARTED;
+            }
+            else if (param->media_ctrl_stat.cmd != ESP_A2D_MEDIA_CTRL_SUSPEND) {
+                // not started successfully, transfer to idle state
+                ESP_LOGI(TAG, "a2dp media start failed.");
+                g_bt_service->audio_state = BT_SOURCE_STATE_IDLE;
+            }
+        }
+        else if (event == ESP_A2D_CONNECTION_STATE_EVT && param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
+            g_bt_service->source_a2d_state = BT_SOURCE_STATE_UNCONNECTED;
+            if (g_bt_service->periph) {
+                esp_periph_send_event(g_bt_service->periph, PERIPH_BLUETOOTH_DISCONNECTED, NULL, 0);
+            }
+        }
+        break;
+    case BT_SOURCE_STATE_DISCONNECTING:
+        break;
+    default:
+        ESP_LOGE(TAG, "%s invalid state %d", __func__, g_bt_service->source_a2d_state);
+        break;
     }
 }
 
-esp_err_t bluetooth_service_start(bluetooth_service_cfg_t *config)
+esp_err_t bluetooth_service_start(bluetooth_service_cfg_t* config)
 {
     if (g_bt_service) {
         ESP_LOGE(TAG, "Bluetooth service have been initialized");
@@ -509,10 +522,12 @@ esp_err_t bluetooth_service_start(bluetooth_service_cfg_t *config)
 
     if (config->device_name) {
         esp_bt_dev_set_device_name(config->device_name);
-    } else {
+    }
+    else {
         if (config->mode == BLUETOOTH_A2DP_SINK) {
             esp_bt_dev_set_device_name("ESP-ADF-SPEAKER");
-        } else {
+        }
+        else {
             esp_bt_dev_set_device_name("ESP-ADF-SOURCE");
         }
     }
@@ -527,7 +542,8 @@ esp_err_t bluetooth_service_start(bluetooth_service_cfg_t *config)
         // TODO: Use this function for IDF version higher than v3.0
         // esp_a2d_sink_register_data_callback(bt_a2d_data_cb);
         g_bt_service->stream_type = AUDIO_STREAM_READER;
-    } else {
+    }
+    else {
         /*
         * Set default parameters for Legacy Pairing
         * Use variable pin, input pin code when pairing
@@ -544,7 +560,8 @@ esp_err_t bluetooth_service_start(bluetooth_service_cfg_t *config)
         ESP_LOGI(TAG, "Starting device discovery...");
         if (config->remote_name) {
             memcpy(&g_bt_service->peer_bdname, config->remote_name, strlen(config->remote_name) + 1);
-        } else {
+        }
+        else {
             memcpy(&g_bt_service->peer_bdname, BT_SOURCE_DEFAULT_REMOTE_NAME, strlen(BT_SOURCE_DEFAULT_REMOTE_NAME) + 1);
         }
 
@@ -575,7 +592,8 @@ esp_err_t bluetooth_service_destroy()
         esp_avrc_ct_deinit();
         if (g_bt_service->stream_type == AUDIO_STREAM_READER) {
             esp_a2d_sink_deinit();
-        } else {
+        }
+        else {
             esp_a2d_source_deinit();
         }
         esp_bluedroid_disable();
@@ -620,7 +638,7 @@ static esp_err_t _bt_periph_init(esp_periph_handle_t periph)
     return ESP_OK;
 }
 
-static esp_err_t _bt_periph_run(esp_periph_handle_t self, audio_event_iface_msg_t *msg)
+static esp_err_t _bt_periph_run(esp_periph_handle_t self, audio_event_iface_msg_t* msg)
 {
     return ESP_OK;
 }
@@ -672,7 +690,8 @@ esp_err_t periph_bluetooth_play(esp_periph_handle_t periph)
     esp_err_t err = ESP_OK;
     if (g_bt_service->stream_type == AUDIO_STREAM_READER) {
         err = periph_bluetooth_passthrough_cmd(periph, ESP_AVRC_PT_CMD_PLAY);
-    } else {
+    }
+    else {
         err = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY);
     }
     return err;
@@ -684,7 +703,8 @@ esp_err_t periph_bluetooth_pause(esp_periph_handle_t periph)
     esp_err_t err = ESP_OK;
     if (g_bt_service->stream_type == AUDIO_STREAM_READER) {
         err = periph_bluetooth_passthrough_cmd(periph, ESP_AVRC_PT_CMD_PAUSE);
-    } else {
+    }
+    else {
         err = esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_SUSPEND);
     }
     return err;
@@ -696,7 +716,8 @@ esp_err_t periph_bluetooth_stop(esp_periph_handle_t periph)
     esp_err_t err = ESP_OK;
     if (g_bt_service->stream_type == AUDIO_STREAM_READER) {
         err = periph_bluetooth_passthrough_cmd(periph, ESP_AVRC_PT_CMD_STOP);
-    } else {
+    }
+    else {
         esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_STOP);
         g_bt_service->audio_state = ESP_A2D_AUDIO_STATE_STOPPED;
     }
