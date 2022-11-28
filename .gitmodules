@@ -7,5 +7,4 @@
 	url = https://github.com/espressif/esp-adf-libs
 [submodule "components/esp-sr"]
 	path = components/esp-sr
-	url = https://github.com/espressif/esp-sr.git
-    branch = v1.0
+	url = https://github.com/espressif/esp-sr
